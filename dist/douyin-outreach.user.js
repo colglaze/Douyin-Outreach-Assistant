@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音达人商务助手 (Douyin Outreach Assistant)
 // @namespace    https://github.com/douyin-outreach
-// @version      0.5.4
+// @version      0.5.5
 // @description  达人识别 / 达人库 / 私信模板 / AI润色 / 一键填入私信 / 联系记录（默认人工确认，自动发送需显式开启）
 // @author       douyin-outreach
 // @match        https://www.douyin.com/*
@@ -545,7 +545,6 @@
       const options = {
         bubbles: true,
         cancelable: true,
-        view: window,
         clientX: rect.x + rect.width / 2,
         clientY: rect.y + rect.height / 2
       };
@@ -645,7 +644,6 @@
       const opts = {
         bubbles: true,
         cancelable: true,
-        view: window,
         clientX: r.x + r.width / 2,
         clientY: r.y + r.height / 2
       };
@@ -733,7 +731,7 @@
       if (!dialog) return;
       const close = Array.from(dialog.querySelectorAll('[class*="closeImPage"]')).find((el) => this.adapter.isVisible(el));
       if (close) {
-        close.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+        close.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
         this.surface = null;
         logger.info(SCOPE4, "message dialog closed");
       }
@@ -2107,7 +2105,7 @@ ${draft}
 
   // src/main.ts
   var SCOPE10 = "Main";
-  var VERSION = "0.5.4";
+  var VERSION = "0.5.5";
   logger.info(SCOPE10, `userscript alive v${VERSION}, href=${location.href}`);
   function showFatalBanner(msg) {
     if (!document.body || document.getElementById("doa-fatal-banner")) return;

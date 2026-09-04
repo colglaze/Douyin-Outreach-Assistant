@@ -296,7 +296,6 @@ export class DouyinAdapter {
     const options: MouseEventInit = {
       bubbles: true,
       cancelable: true,
-      view: window,
       clientX: rect.x + rect.width / 2,
       clientY: rect.y + rect.height / 2,
     };

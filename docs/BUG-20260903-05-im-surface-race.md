@@ -79,3 +79,32 @@ sessionStorage 会话，表现为：填入成功、消息可能实际已发出�
    继续下一位，直到达到单会话上限；
 3. 若仍停在"自动发送未被平台接受"，控制台会有 `input still has N chars`，
    截图反馈（此时才需要怀疑 isTrusted 拦截）。
+
+## V0.5.5 热修复：Tampermonkey 沙箱无法构造 PointerEvent
+
+用户导入 V0.5.4 后，连刷续跑在切换下一条视频时抛出：
+
+```text
+TypeError: Failed to construct 'PointerEvent': Failed to read the 'view'
+property from 'UIEventInit': Failed to convert value to 'Window'.
+```
+
+### 根因
+
+V0.5.4 的激活事件使用 `MouseEventInit.view = window`。普通页面上下文里该值是
+原生 `Window`，所以 Playwright 探针通过；Tampermonkey userscript 沙箱中的
+`window` 是代理对象，跨 realm 传入原生 `PointerEvent` 构造器时不能转换为
+`Window`，因此事件尚未派发就抛异常，`feedAuto.resume()` 被 main.ts 捕获并停止。
+
+React `#418/#422` 同时出现但属于抖音页面自身 hydration 报错，既有匿名态冒烟
+测试也会出现，与连刷失败无关。
+
+### 修复
+
+- 从 `MessageAdapter.dispatchActivation()` 和
+  `DouyinAdapter.activateNextFeedVideo()` 的事件参数中移除可选字段 `view`；
+- 同步移除关闭 IM 面板 `MouseEvent` 中的 `view`，杜绝相同跨 realm 异常；
+- 保留坐标、冒泡、可取消属性以及完整 pointer/mouse 激活序列；
+- 版本升至 V0.5.5，重新构建 dist。
+
+状态：代码已修复并通过 typecheck/build，待用户导入 V0.5.5 复测。

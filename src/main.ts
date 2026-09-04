@@ -22,7 +22,7 @@ import { sleep } from './utils/dom';
 import { logger } from './utils/logger';
 
 const SCOPE = 'Main';
-const VERSION = '0.5.4';
+const VERSION = '0.5.5';
 
 // BUG-20260903-03：存活标记必须是最早执行的语句——
 // 用户在控制台过滤 [DouyinOutreach] 即可确认脚本是否被注入执行

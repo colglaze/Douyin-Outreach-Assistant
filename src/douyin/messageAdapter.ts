@@ -38,7 +38,7 @@ export class MessageAdapter {
   private dispatchActivation(el: HTMLElement): void {
     const r = el.getBoundingClientRect();
     const opts: MouseEventInit = {
-      bubbles: true, cancelable: true, view: window,
+      bubbles: true, cancelable: true,
       clientX: r.x + r.width / 2, clientY: r.y + r.height / 2,
     };
     for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
@@ -136,7 +136,7 @@ export class MessageAdapter {
     const close = Array.from(dialog.querySelectorAll<HTMLElement>('[class*="closeImPage"]'))
       .find((el) => this.adapter.isVisible(el));
     if (close) {
-      close.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      close.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
       this.surface = null;
       logger.info(SCOPE, 'message dialog closed');
     }
