@@ -102,6 +102,15 @@ export const selectors = {
   recommendNavLink: [
     'a[href*="recommend=1"]',
   ],
+  /**
+   * 推荐 feed - 下一条视频按钮（V0.5.4 真实页面取证）。
+   * 合成 ArrowDown/WheelEvent 不会触发切换；该 data-e2e 控件用完整 pointer/mouse
+   * 激活序列可稳定让下一条进入可视区并加载新作者。
+   */
+  feedNextButton: [
+    '[data-e2e="video-switch-next-arrow"]',
+    '.xgplayer-playswitch-next',
+  ],
 } as const;
 
 export type SelectorKey = keyof typeof selectors;

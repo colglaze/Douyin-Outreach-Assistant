@@ -282,6 +282,34 @@ export class DouyinAdapter {
   }
 
   /**
+   * 切换推荐 feed 的下一条视频（V0.5.4 真实页面取证）。
+   * 合成 ArrowDown/WheelEvent 不会被抖音轮播接收；`video-switch-next-arrow`
+   * 控件接受完整 pointer/mouse 激活序列。返回 false 时由业务层计为空轮次。
+   */
+  activateNextFeedVideo(): boolean {
+    const btn = this.query('feedNextButton') as HTMLElement | null;
+    if (!btn || !this.isVisible(btn) || btn.classList.contains('disabled')) {
+      logger.warn(SCOPE, 'feed next-video control not available');
+      return false;
+    }
+    const rect = btn.getBoundingClientRect();
+    const options: MouseEventInit = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX: rect.x + rect.width / 2,
+      clientY: rect.y + rect.height / 2,
+    };
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      btn.dispatchEvent(type.startsWith('pointer')
+        ? new PointerEvent(type, options)
+        : new MouseEvent(type, options));
+    }
+    logger.info(SCOPE, 'feed next-video control activated');
+    return true;
+  }
+
+  /**
    * 站内整页跳转。
    * 实测（BUG-20260903-02）：抖音跳 /user/ 达人主页一定是整页刷新（SPA 不接管），
    * 合成锚点点击是最稳定的触发方式；调用方需自行持久化状态（sessionStorage 续跑）。

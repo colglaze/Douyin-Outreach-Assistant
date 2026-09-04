@@ -191,7 +191,8 @@ export class FeedAutomation {
         return;
       }
       this.setMessage(`未发现新达人，切换下一条（${round + 1}/${MAX_EMPTY_SCROLL_ROUNDS}）`);
-      this.scrollFeed();
+      const switched = this.deps.adapter.activateNextFeedVideo();
+      if (!switched) logger.warn(SCOPE, 'next-video control activation failed');
       await sleep(2500);
     }
     this.fail('多次切换后仍无新达人链接（可能未登录、被弹窗遮挡或 feed 未加载）');
@@ -257,7 +258,11 @@ export class FeedAutomation {
     await this.backToFeed();
   }
 
-  /** 单个达人的私信触达；返回 true 表示发送成功并已记录 */
+  /**
+   * 单个达人的私信触达；返回 true 表示发送成功并已记录。
+   * V0.5.4：sendMessage 的结果以“当前可见 surface”判定，发送后重新探测一次
+   * chat 是否仍可见，避免整树重渲染把成功误报为失败。
+   */
   private async outreachOnce(
     ctx: CreatorPageContext,
     info: CreatorInfo,
@@ -318,14 +323,6 @@ export class FeedAutomation {
   /** 推荐 feed 页判定：SPA 进入后为 /?recommend=1（pathname 即 /） */
   private isRecommendPage(): boolean {
     return location.pathname === '/' || location.pathname === '';
-  }
-
-  /** 推荐页连刷切换下一条（下箭头 + 滚轮） */
-  private scrollFeed(): void {
-    document.body.dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', bubbles: true }),
-    );
-    window.dispatchEvent(new WheelEvent('wheel', { deltaY: 1200, bubbles: true }));
   }
 
   /** 达到上限则收官，否则整页跳回首页（302 到精选后由 resume 续跑） */

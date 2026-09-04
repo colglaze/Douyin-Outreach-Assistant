@@ -37,3 +37,45 @@
 - 发送按钮等待同一 dialog 内的可用状态，避免点击灰色占位按钮。
 
 状态：作者页/列表层修复已加入，自动发送仍受浏览器 `isTrusted` 限制，需真实页面复测确认。
+
+## V0.5.4 修复：发送成功被误判为失败，连刷一单即停
+
+用户复测确认多行文案填入已完整（V0.5.3 生效），但自动发送后连刷不再继续。
+
+### 根因（代码走查定位）
+
+发送成功的确认逻辑以**填入时的编辑器节点**为判据：`waitForInputClear` 中
+`if (!input.isConnected) return false`。而 V0.5.3 起 多行文案走 paste 路径，
+Slate 模型为多块结构——**发送成功后 Slate 会清空并整树重渲染，直接替换
+contenteditable 节点**，旧节点断开 ≠ 未发送。旧逻辑把"节点被替换"当成
+"发送未被接受"返回 false，`outreachOnce` 随即 `fail()` 置 ERROR 并清除
+sessionStorage 会话，表现为：填入成功、消息可能实际已发出，但脚本报
+"自动发送未被平台接受"，连刷停止、不再回推荐页。
+
+（V0.5.0 E2E 能通过是侥幸：单行 insertText 填入后发送不一定触发整树替换，
+节点保持连接，输入框清空被正确读到。）
+
+### 修复
+
+- `MessageAdapter.waitForInputClear`：填入时的节点断开后，改为持续改查
+  **当前可见 surface 的编辑器**判空；以最新可见编辑器为空确认发送成功；
+- `MessageAdapter.sendMessage`：两轮激活都未确认时，落判前重新探测当前
+  surface——最新编辑器为空即确认发送（`editor replaced, latest surface empty`），
+  连 surface 都不存在才报"被替换前未确认"；
+- `MessageAdapter.sendMessage`：恢复 V0.5.0 真实探针已验证的发送方式——先聚焦
+  编辑器，再在同一轮对发送 SVG 和 `inputAction` 宿主派发完整激活序列；
+- 推荐页“切下一条”新增真实取证：合成 `ArrowDown` / `WheelEvent` 对 feed 无效；
+  改点 `[data-e2e="video-switch-next-arrow"]`（候选选择器集中在 selectors.ts），
+  登录态探针确认播放索引 0→1、下一视频进入可视区、作者链接 2→3；
+- 发送结果确认：host 与 SVG 同轮激活后统一等待最新可见编辑器判空，避免
+  拆成两轮丢失 Slate selection，也避免超时后二次点击导致重复触发。
+
+### 待用户复测
+
+1. 更新到 v0.5.4，推荐页启动连刷；
+2. 预期日志链：`message filled` -> `send activation dispatched` ->
+   `send confirmed (input cleared)` 或 `send confirmed (editor replaced...)` ->
+   `message dialog closed` -> `sent N/M: 昵称` -> `返回推荐页…` ->
+   继续下一位，直到达到单会话上限；
+3. 若仍停在"自动发送未被平台接受"，控制台会有 `input still has N chars`，
+   截图反馈（此时才需要怀疑 isTrusted 拦截）。

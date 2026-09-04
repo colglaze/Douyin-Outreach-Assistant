@@ -278,14 +278,24 @@ export class MessageAdapter {
     return (input.textContent || (input as HTMLInputElement).value || '').replace(/[​‌‍﻿\s]/g, '');
   }
 
+  /**
+   * 等待输入框清空以确认发送。
+   * V0.5.4（BUG-20260903-05）：发送成功后 Slate 常整树重渲染并替换编辑器节点，
+   * 旧 input 断开不代表失败——此时改查当前可见 surface 的编辑器判空；
+   * 连最新编辑器都找不到才判失败。
+   */
   private async waitForInputClear(input: HTMLElement, timeoutMs: number): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
+    let current: HTMLElement | null = input;
     while (Date.now() < deadline) {
-      if (!input.isConnected) return false;
-      if (!this.messageText(input)) return true;
+      if (!current || !current.isConnected) {
+        current = this.adapter.getMessageSurface()?.input ?? null;
+      }
+      if (current && !this.messageText(current)) return true;
       await sleep(150);
     }
-    return !input.isConnected || !this.messageText(input);
+    const last = this.adapter.getMessageSurface()?.input ?? current;
+    return !!last && !this.messageText(last);
   }
 
   async sendMessage(): Promise<boolean> {
@@ -313,26 +323,31 @@ export class MessageAdapter {
       return false;
     }
     const host = (btn.closest('[class*="inputAction"]') as HTMLElement) || btn;
-    // 发送 SVG 与宿主都可能挂有 handler。先尝试 SVG，确认未发送后再尝试宿主，
-    // 一旦输入清空立即停止，避免一次消息被触发两次。
+    // V0.5.4：恢复 V0.5.0 真实探针验证成功的激活路径——同一轮同时激活
+    // SVG 与 inputAction 宿主，再等待结果。把两者拆成相隔数秒的两轮会丢失
+    // Slate 当前 selection，且首轮无效后第二轮也可能仍不触发 React handler。
+    input.focus();
     this.dispatchActivation(btn);
-    logger.info(SCOPE, `send activation dispatched on send target (synthetic=${!new MouseEvent('click').isTrusted})`);
-    let sent = await this.waitForInputClear(input, 2500);
-    if (!sent && host !== btn && input.isConnected) {
-      this.dispatchActivation(host);
-      logger.info(SCOPE, 'send target had no effect; host activation dispatched once');
-      sent = await this.waitForInputClear(input, 2000);
-    }
+    if (host !== btn) this.dispatchActivation(host);
+    logger.info(SCOPE, `send activation dispatched on target and host (synthetic=${!new MouseEvent('click').isTrusted})`);
+    const sent = await this.waitForInputClear(input, 4500);
     if (sent) {
       logger.info(SCOPE, 'send confirmed (input cleared)');
       return true;
     }
-    if (!input.isConnected || !surface.dialog.isConnected) {
+    // V0.5.4：Slate 重渲染可能替换节点——以“当前可见 surface 的编辑器”为准判残留。
+    const lastSurface = this.adapter.getMessageSurface();
+    const lastInput = lastSurface?.input ?? (input.isConnected ? input : null);
+    if (lastSurface && lastInput && !this.messageText(lastInput)) {
+      logger.info(SCOPE, 'send confirmed (editor replaced, latest surface empty)');
+      return true;
+    }
+    if (!lastSurface) {
       logger.warn(SCOPE, 'message surface replaced before send confirmation');
       this.surface = null;
       return false;
     }
-    const residual = this.messageText(input);
+    const residual = lastInput ? this.messageText(lastInput) : '';
     logger.error(SCOPE, `auto-send not accepted; input still has ${residual.length} chars, please click Send manually`);
     return false;
   }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音达人商务助手 (Douyin Outreach Assistant)
 // @namespace    https://github.com/douyin-outreach
-// @version      0.5.3
+// @version      0.5.4
 // @description  达人识别 / 达人库 / 私信模板 / AI润色 / 一键填入私信 / 联系记录（默认人工确认，自动发送需显式开启）
 // @author       douyin-outreach
 // @match        https://www.douyin.com/*
@@ -253,6 +253,15 @@
      */
     recommendNavLink: [
       'a[href*="recommend=1"]'
+    ],
+    /**
+     * 推荐 feed - 下一条视频按钮（V0.5.4 真实页面取证）。
+     * 合成 ArrowDown/WheelEvent 不会触发切换；该 data-e2e 控件用完整 pointer/mouse
+     * 激活序列可稳定让下一条进入可视区并加载新作者。
+     */
+    feedNextButton: [
+      '[data-e2e="video-switch-next-arrow"]',
+      ".xgplayer-playswitch-next"
     ]
   };
 
@@ -520,6 +529,31 @@
         btn.click();
         logger.info(SCOPE2, "feed guide overlay dismissed");
       }
+    }
+    /**
+     * 切换推荐 feed 的下一条视频（V0.5.4 真实页面取证）。
+     * 合成 ArrowDown/WheelEvent 不会被抖音轮播接收；`video-switch-next-arrow`
+     * 控件接受完整 pointer/mouse 激活序列。返回 false 时由业务层计为空轮次。
+     */
+    activateNextFeedVideo() {
+      const btn = this.query("feedNextButton");
+      if (!btn || !this.isVisible(btn) || btn.classList.contains("disabled")) {
+        logger.warn(SCOPE2, "feed next-video control not available");
+        return false;
+      }
+      const rect = btn.getBoundingClientRect();
+      const options = {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: rect.x + rect.width / 2,
+        clientY: rect.y + rect.height / 2
+      };
+      for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+        btn.dispatchEvent(type.startsWith("pointer") ? new PointerEvent(type, options) : new MouseEvent(type, options));
+      }
+      logger.info(SCOPE2, "feed next-video control activated");
+      return true;
     }
     /**
      * 站内整页跳转。
@@ -825,14 +859,24 @@
     messageText(input) {
       return (input.textContent || input.value || "").replace(/[​‌‍﻿\s]/g, "");
     }
+    /**
+     * 等待输入框清空以确认发送。
+     * V0.5.4（BUG-20260903-05）：发送成功后 Slate 常整树重渲染并替换编辑器节点，
+     * 旧 input 断开不代表失败——此时改查当前可见 surface 的编辑器判空；
+     * 连最新编辑器都找不到才判失败。
+     */
     async waitForInputClear(input, timeoutMs) {
       const deadline = Date.now() + timeoutMs;
+      let current = input;
       while (Date.now() < deadline) {
-        if (!input.isConnected) return false;
-        if (!this.messageText(input)) return true;
+        if (!current || !current.isConnected) {
+          current = this.adapter.getMessageSurface()?.input ?? null;
+        }
+        if (current && !this.messageText(current)) return true;
         await sleep(150);
       }
-      return !input.isConnected || !this.messageText(input);
+      const last = this.adapter.getMessageSurface()?.input ?? current;
+      return !!last && !this.messageText(last);
     }
     async sendMessage() {
       const surface = this.currentSurface();
@@ -858,24 +902,27 @@
         return false;
       }
       const host = btn.closest('[class*="inputAction"]') || btn;
+      input.focus();
       this.dispatchActivation(btn);
-      logger.info(SCOPE4, `send activation dispatched on send target (synthetic=${!new MouseEvent("click").isTrusted})`);
-      let sent = await this.waitForInputClear(input, 2500);
-      if (!sent && host !== btn && input.isConnected) {
-        this.dispatchActivation(host);
-        logger.info(SCOPE4, "send target had no effect; host activation dispatched once");
-        sent = await this.waitForInputClear(input, 2e3);
-      }
+      if (host !== btn) this.dispatchActivation(host);
+      logger.info(SCOPE4, `send activation dispatched on target and host (synthetic=${!new MouseEvent("click").isTrusted})`);
+      const sent = await this.waitForInputClear(input, 4500);
       if (sent) {
         logger.info(SCOPE4, "send confirmed (input cleared)");
         return true;
       }
-      if (!input.isConnected || !surface.dialog.isConnected) {
+      const lastSurface = this.adapter.getMessageSurface();
+      const lastInput = lastSurface?.input ?? (input.isConnected ? input : null);
+      if (lastSurface && lastInput && !this.messageText(lastInput)) {
+        logger.info(SCOPE4, "send confirmed (editor replaced, latest surface empty)");
+        return true;
+      }
+      if (!lastSurface) {
         logger.warn(SCOPE4, "message surface replaced before send confirmation");
         this.surface = null;
         return false;
       }
-      const residual = this.messageText(input);
+      const residual = lastInput ? this.messageText(lastInput) : "";
       logger.error(SCOPE4, `auto-send not accepted; input still has ${residual.length} chars, please click Send manually`);
       return false;
     }
@@ -1285,7 +1332,8 @@
           return;
         }
         this.setMessage(`\u672A\u53D1\u73B0\u65B0\u8FBE\u4EBA\uFF0C\u5207\u6362\u4E0B\u4E00\u6761\uFF08${round + 1}/${MAX_EMPTY_SCROLL_ROUNDS}\uFF09`);
-        this.scrollFeed();
+        const switched = this.deps.adapter.activateNextFeedVideo();
+        if (!switched) logger.warn(SCOPE8, "next-video control activation failed");
         await sleep(2500);
       }
       this.fail("\u591A\u6B21\u5207\u6362\u540E\u4ECD\u65E0\u65B0\u8FBE\u4EBA\u94FE\u63A5\uFF08\u53EF\u80FD\u672A\u767B\u5F55\u3001\u88AB\u5F39\u7A97\u906E\u6321\u6216 feed \u672A\u52A0\u8F7D\uFF09");
@@ -1339,7 +1387,11 @@
       }
       await this.backToFeed();
     }
-    /** 单个达人的私信触达；返回 true 表示发送成功并已记录 */
+    /**
+     * 单个达人的私信触达；返回 true 表示发送成功并已记录。
+     * V0.5.4：sendMessage 的结果以“当前可见 surface”判定，发送后重新探测一次
+     * chat 是否仍可见，避免整树重渲染把成功误报为失败。
+     */
     async outreachOnce(ctx, info, limit) {
       const { messageAdapter, creatorService, messageService } = this.deps;
       const opened = await messageAdapter.openMessageDialog(info.nickname, true);
@@ -1383,13 +1435,6 @@
     /** 推荐 feed 页判定：SPA 进入后为 /?recommend=1（pathname 即 /） */
     isRecommendPage() {
       return location.pathname === "/" || location.pathname === "";
-    }
-    /** 推荐页连刷切换下一条（下箭头 + 滚轮） */
-    scrollFeed() {
-      document.body.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "ArrowDown", code: "ArrowDown", bubbles: true })
-      );
-      window.dispatchEvent(new WheelEvent("wheel", { deltaY: 1200, bubbles: true }));
     }
     /** 达到上限则收官，否则整页跳回首页（302 到精选后由 resume 续跑） */
     async backToFeed() {
@@ -2062,7 +2107,7 @@ ${draft}
 
   // src/main.ts
   var SCOPE10 = "Main";
-  var VERSION = "0.5.3";
+  var VERSION = "0.5.4";
   logger.info(SCOPE10, `userscript alive v${VERSION}, href=${location.href}`);
   function showFatalBanner(msg) {
     if (!document.body || document.getElementById("doa-fatal-banner")) return;

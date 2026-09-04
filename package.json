@@ -1,6 +1,6 @@
 {
   "name": "douyin-outreach-assistant",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "抖音达人商务助手 - Tampermonkey 用户脚本 MVP（达人识别 / 达人库 / 私信模板 / AI润色 / 联系记录）",
   "private": true,
   "type": "module",
