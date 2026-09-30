@@ -21,7 +21,7 @@ export class FloatingButton {
   private render(): HTMLDivElement {
     const el = document.createElement('div');
     el.id = 'doa-fab';
-    el.title = `抖音达人商务助手 v${this.version}（点击展开/收起面板）`;
+    el.title = `抖音达人私信助手 v${this.version}（点击展开/收起面板）`;
     el.style.cssText = [
       'position:fixed',
       'right:16px',

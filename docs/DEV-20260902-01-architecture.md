@@ -71,3 +71,31 @@ core/ (eventBus, observer, router)  storage/ (indexedDb, settings)  utils/
 - 抖音 DOM 选择器失效 → 所有选择器集中在 selectors.ts，候选数组降级 + logger 告警。
 - 私信输入框 React 受控 → 原生 setter + input 事件 / execCommand 双路径写入。
 - AI Key 暴露 → MVP 仅存本地 settings，正式版走 AI Gateway。
+
+## 8. 交友模式扩展（REQ-20260929-01）
+
+- `CreatorInfo` 增加明确性别及粉丝数是否成功识别；`AppSettings` 增加模式、目标性别、粉丝范围和交友文案。
+- `douyin/adapter.ts` 只读取主页明确性别标识；`creator/` 的纯筛选函数决定是否匹配；`feed/` 在打开 IM 前应用筛选。
+- 复用现有 sessionStorage 连刷会话、IndexedDB 设置与消息记录，不新增后端或存储表。
+
+## 9. 作品线索识别（REQ-20260929-02）
+
+- `douyin/adapter.ts` 从 `[data-e2e="user-post-list"]` 提取作品标题和封面；`ui/` 通过 `main.ts` 动作读取，不碰抖音 DOM。
+- `creator/workGenderClues.ts` 对明确第一人称自述做纯文本判断；`ai/workCoverReader.ts` 可选地向用户配置的图像模型请求封面可见文字。
+- 合并结果只在面板展示；确认沿用已有 `onSetGender` 本地标记，自动连刷不直接使用未确认的作品建议。
+# REQ-20260929-03 实施补充
+
+- `AppSettings` 增加本地自定义模板列表、商务/交友连刷来源模式及交友模板 ID；旧商务自定义文案通过加载迁移保持优先级。
+- `message/templateEngine.ts` 负责模板查找、增删改与连刷文案来源解析；`ui/panel.ts` 只负责编辑草稿与交互，`feed/feedAutomation.ts` 使用统一解析结果。
+- 草稿仅在当前页面内按达人 ID 缓存，不等同于持久模板；内置模板只读。更新模板时持久化原始编辑文本，变量在面向达人填入或连刷发送时展开。
+# REQ-20260929-04 实施补充
+
+- `ai/providerPresets.ts` 保存可验证的端点、默认模型和已知图像能力；UI 切换提供商时填入端点/模型并清空旧 Key。
+- 不扩展 `AppSettings`：现有 `aiEndpoint`、`aiModel`、`aiApiKey` 可表示所有兼容提供商；从端点和模型推导当前快捷选项。
+- `workCoverReader.ts` 在已知文字模型上跳过图像请求；未知自定义模型维持原有调用方式并让调用失败安全降级。
+# REQ-20260929-05 实施补充
+
+- 连刷模式为本次运行选择，并随 `sessionStorage` 会话保存；旧会话缺少模式字段时按限量恢复。无需增加持久设置字段。
+- `FeedAutomation` 的条数结束和交友访问 50 主页结束仅在限量模式触发；持续模式仍在故障、连续失败或手动停止时退出。
+- 访问总数与最近访问链接分开存储，链接集合最多 1000 条；长期运行的同标签页会话不会因链接表无限增长而耗尽存储。
+- 在打开、填入与发送之间检查运行态与自动发送开关，手动停止不触发下一次发送。

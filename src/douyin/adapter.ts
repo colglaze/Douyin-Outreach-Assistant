@@ -7,6 +7,7 @@ import { selectors, type SelectorKey } from './selectors';
 import { queryFirst, findByText } from '../utils/dom';
 import { parseChineseCount } from '../utils/number';
 import { logger } from '../utils/logger';
+import type { ProfileGender, WorkSample } from '../types';
 
 const SCOPE = 'DouyinAdapter';
 
@@ -93,12 +94,60 @@ export class DouyinAdapter {
   /**
    * 粉丝数：优先专用选择器；兜底在主页统计区文本中找 "粉丝 xx万"。
    */
-  getFollowerCount(): number {
+  getFollowerCount(): number | null {
     const direct = this.textOf('followerCount');
-    if (direct) return parseChineseCount(direct);
+    if (/\d/.test(direct)) return parseChineseCount(direct);
     const fallback = this.extractCountByLabel('粉丝');
     if (fallback === null) logger.warn(SCOPE, 'follower count not found');
-    return fallback ?? 0;
+    return fallback;
+  }
+
+  /** 仅识别主页明确的性别徽标；不根据头像、昵称或简介推断。 */
+  getProfileGender(): ProfileGender {
+    const root = this.query('creatorProfile');
+    if (!root) return 'UNKNOWN';
+    const badges = Array.from(root.querySelectorAll<Element>(
+      (selectors.genderBadge as unknown as string[]).join(','),
+    ));
+    for (const badge of badges) {
+      if (!this.isVisible(badge)) continue;
+      const values = [
+        badge.getAttribute('aria-label'), badge.getAttribute('title'), badge.getAttribute('alt'),
+        badge.getAttribute('data-e2e'), badge.textContent?.trim(),
+      ].filter((value): value is string => !!value);
+      for (const value of values) {
+        if (/^(男|男性|性别[:：]?男|性别[:：]?男性|male|gender[-_:]?male)$/i.test(value)) return 'MALE';
+        if (/^(女|女性|性别[:：]?女|性别[:：]?女性|female|gender[-_:]?female)$/i.test(value)) return 'FEMALE';
+      }
+      const className = badge.getAttribute('class') || '';
+      if (/gender[^\s]*female|female[^\s]*gender/i.test(className)) return 'FEMALE';
+      if (/gender[^\s]*male|male[^\s]*gender/i.test(className)) return 'MALE';
+    }
+    return 'UNKNOWN';
+  }
+
+  /** 当前主页最近作品的标题与封面；只读当前作者的 user-post-list。 */
+  getRecentWorks(limit = 6): WorkSample[] {
+    const root = this.query('userPostList');
+    if (!root) return [];
+    const links = Array.from(root.querySelectorAll<HTMLAnchorElement>(
+      (selectors.userPostLinks as unknown as string[]).join(','),
+    ));
+    const seen = new Set<string>();
+    const works: WorkSample[] = [];
+    for (const link of links) {
+      const url = new URL(link.href, location.origin);
+      if (url.hostname !== location.hostname || !/^\/(video|note)\//.test(url.pathname) || seen.has(url.pathname)) continue;
+      seen.add(url.pathname);
+      const cover = this.query('userPostCover', link) as HTMLImageElement | null;
+      works.push({
+        url: `${url.origin}${url.pathname}`,
+        caption: this.textOf('userPostCaption', link).slice(0, 500) || (cover?.alt || '').slice(0, 500),
+        coverUrl: cover?.src || '',
+      });
+      if (works.length >= limit) break;
+    }
+    return works;
   }
 
   getFollowingCount(): number {

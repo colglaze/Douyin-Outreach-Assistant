@@ -25,11 +25,14 @@ export class CreatorParser {
       return null;
     }
 
+    const followers = this.adapter.getFollowerCount();
     const info: CreatorInfo = {
       secUid,
       nickname,
       avatar: this.adapter.getAvatar(),
-      followers: this.adapter.getFollowerCount(),
+      followers: followers ?? 0,
+      followersKnown: followers !== null,
+      gender: this.adapter.getProfileGender(),
       following: this.adapter.getFollowingCount(),
       likes: this.adapter.getLikesCount(),
       signature: this.adapter.getSignature(),

@@ -9,6 +9,13 @@ import { setDebug } from '../utils/logger';
 const SETTINGS_KEY = 'app';
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  outreachMode: 'BUSINESS',
+  targetGender: 'ANY',
+  minFollowers: 0,
+  maxFollowers: 0,
+  datingMessage: '你好 {{nickname}}，看到你的分享，觉得很有意思。想认识一下，方便聊聊吗？如果不方便也没关系，祝你今天愉快。',
+  datingMessageMode: 'CUSTOM',
+  datingTemplateId: 'dating_001',
   brand: '',
   brandIntro: '',
   product: '',
@@ -16,23 +23,34 @@ export const DEFAULT_SETTINGS: AppSettings = {
   wechat: '',
   category: '',
   defaultTemplateId: 'business_001',
+  businessMessageMode: 'TEMPLATE',
+  customTemplates: [],
   aiEnabled: false,
   aiEndpoint: 'https://api.openai.com/v1/chat/completions',
   aiApiKey: '',
   aiModel: 'gpt-4o-mini',
   aiTone: '自然口语化',
   autoSendEnabled: false, // REQ-20260903-01：默认禁用，保持人工点击发送
-  customMessage: '',      // REQ-20260903-02：默认空，回退默认模板
+  customMessage: '',
   autoBatchLimit: 10,     // REQ-20260903-02：连刷单会话发送上限
   debug: false,
 };
 
 let cache: AppSettings | null = null;
 
+export function normalizeSettings(stored: Partial<AppSettings> = {}): AppSettings {
+  return {
+    ...DEFAULT_SETTINGS,
+    ...stored,
+    customTemplates: Array.isArray(stored.customTemplates) ? stored.customTemplates : [],
+    businessMessageMode: stored.businessMessageMode ?? (stored.customMessage?.trim() ? 'CUSTOM' : 'TEMPLATE'),
+  };
+}
+
 export async function loadSettings(): Promise<AppSettings> {
   if (cache) return cache;
   const row = await dbGet<{ key: string; value: Partial<AppSettings> }>(Stores.SETTINGS, SETTINGS_KEY);
-  cache = { ...DEFAULT_SETTINGS, ...(row?.value || {}) };
+  cache = normalizeSettings(row?.value);
   setDebug(cache.debug);
   return cache;
 }

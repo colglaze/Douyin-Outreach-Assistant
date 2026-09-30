@@ -17,7 +17,7 @@
  * 边界（AGENTS.md 第 6 节 v3）：
  * - 必须由用户在面板手动启动，随时可停止（停止即清除会话，不再续跑）；
  * - 需要"消息自动发送"开关（autoSendEnabled）已开启，否则拒绝启动；
- * - 跳过已联系达人；单会话发送上限（autoBatchLimit，默认 10）；
+ * - 跳过已联系达人；限量模式遵守 autoBatchLimit（默认 10），持续模式由用户手动停止；
  * - 连续失败 2 次即停止；会话 30 分钟过期；
  * - 不提供定时/无人值守启动；不跨浏览器会话恢复。
  */
@@ -28,9 +28,11 @@ import { CreatorService, type CreatorPageContext } from '../creator/creatorServi
 import { MessageService } from '../message/messageService';
 import type { CreatorInfo } from '../types';
 import { getSettingsSync } from '../storage/settings';
-import { buildVars, getTemplateById, render } from '../message/templateEngine';
+import { buildVars, render, resolveBatchMessageSource } from '../message/templateEngine';
 import { sleep } from '../utils/dom';
 import { logger } from '../utils/logger';
+import { evaluateDatingMatch } from '../creator/datingFilter';
+import { effectiveSendLimit, reachedDatingProfileLimit, reachedSendLimit, shouldContinueSearching, type FeedAutoMode } from './feedMode';
 
 const SCOPE = 'FeedAutomation';
 
@@ -38,9 +40,11 @@ export type FeedAutoState = 'IDLE' | 'RUNNING' | 'STOPPED' | 'DONE' | 'ERROR';
 
 export interface FeedAutoSnapshot {
   state: FeedAutoState;
+  mode: FeedAutoMode;
   sent: number;
-  limit: number;
+  limit: number | null;
   visited: number;
+  skipped: number;
   /** 当前状态说明或最近错误信息（用于面板展示与 toast） */
   message: string;
 }
@@ -58,9 +62,12 @@ interface FeedAutomationDeps {
 /** sessionStorage 中的连刷会话（仅 RUNNING 态会被持久化） */
 interface FeedSession {
   v: 1;
+  mode?: FeedAutoMode;
   sent: number;
   fails: number;
   visited: string[];
+  visitedCount?: number;
+  skipped?: number;
   message: string;
   startedAt: number;
 }
@@ -69,12 +76,17 @@ const SESSION_KEY = 'doa.feedSession.v1';
 const SESSION_TTL = 30 * 60 * 1000; // 30 分钟过期，避免陈旧会话意外续跑
 const MAX_CONSECUTIVE_FAILS = 2;
 const MAX_EMPTY_SCROLL_ROUNDS = 8;
+const MAX_DATING_PROFILES = 50;
+const MAX_RECENT_VISITED_URLS = 1000;
 
 export class FeedAutomation {
   private state: FeedAutoState = 'IDLE';
   private sent = 0;
+  private mode: FeedAutoMode = 'LIMITED';
   private consecutiveFails = 0;
   private visited = new Set<string>();
+  private visitedCount = 0;
+  private skipped = 0;
   private message = '未启动';
 
   constructor(private deps: FeedAutomationDeps) {
@@ -82,9 +94,12 @@ export class FeedAutomation {
     const s = this.loadSession();
     if (s) {
       this.state = 'RUNNING';
+      this.mode = s.mode === 'CONTINUOUS' ? 'CONTINUOUS' : 'LIMITED';
       this.sent = s.sent;
       this.consecutiveFails = s.fails;
       this.visited = new Set(s.visited);
+      this.visitedCount = Math.max(s.visitedCount || 0, this.visited.size);
+      this.skipped = s.skipped || 0;
       this.message = s.message;
     }
   }
@@ -92,9 +107,11 @@ export class FeedAutomation {
   snapshot(): FeedAutoSnapshot {
     return {
       state: this.state,
+      mode: this.mode,
       sent: this.sent,
-      limit: getSettingsSync().autoBatchLimit || 10,
-      visited: this.visited.size,
+      limit: effectiveSendLimit(this.mode, getSettingsSync().autoBatchLimit),
+      visited: this.visitedCount,
+      skipped: this.skipped,
       message: this.message,
     };
   }
@@ -109,10 +126,14 @@ export class FeedAutomation {
   }
 
   /** 手动启动（面板按钮）。必须在推荐页或精选落地页上启动 */
-  async start(): Promise<void> {
+  async start(mode: FeedAutoMode = 'LIMITED'): Promise<void> {
     if (this.state === 'RUNNING') return;
     if (!getSettingsSync().autoSendEnabled) {
       this.fail('需要先在设置中开启「消息自动发送」开关');
+      return;
+    }
+    if (!resolveBatchMessageSource(getSettingsSync()).trim()) {
+      this.fail('请先在设置中填写私信内容或选择有效模板');
       return;
     }
     if (!this.isRecommendPage() && location.pathname !== '/jingxuan') {
@@ -120,12 +141,15 @@ export class FeedAutomation {
       return;
     }
     this.state = 'RUNNING';
+    this.mode = mode;
     this.sent = 0;
     this.consecutiveFails = 0;
     this.visited.clear();
+    this.visitedCount = 0;
+    this.skipped = 0;
     this.setMessage('连刷中…');
     this.saveSession();
-    logger.info(SCOPE, 'feed automation started');
+    logger.info(SCOPE, `feed automation started, mode=${mode}`);
     await this.stepOnFeed();
   }
 
@@ -135,7 +159,7 @@ export class FeedAutomation {
    */
   async resume(): Promise<void> {
     if (this.state !== 'RUNNING') return; // 构造时已从会话恢复；无会话即 IDLE
-    logger.info(SCOPE, `resume on ${location.pathname}: sent=${this.sent}, visited=${this.visited.size}`);
+    logger.info(SCOPE, `resume on ${location.pathname}: sent=${this.sent}, visited=${this.visitedCount}, mode=${this.mode}`);
     this.deps.onChange(this.snapshot());
     // 等页面主体内容加载（整页刷新后 DOM 异步渲染）
     await sleep(2500);
@@ -151,6 +175,13 @@ export class FeedAutomation {
 
   private async stepOnFeed(): Promise<void> {
     if (this.state !== 'RUNNING') return;
+    if (getSettingsSync().outreachMode === 'DATING' &&
+      reachedDatingProfileLimit(this.mode, this.visitedCount, MAX_DATING_PROFILES)) {
+      this.clearSession();
+      this.state = 'DONE';
+      this.setMessage(`已查看 ${MAX_DATING_PROFILES} 个主页，交友筛选结束（发送 ${this.sent} 条）`);
+      return;
+    }
 
     // 精选落地页 -> SPA 点侧栏「推荐」（实测无刷新，会话内存保留）
     if (location.pathname === '/jingxuan') {
@@ -160,8 +191,10 @@ export class FeedAutomation {
       nav.removeAttribute('target');
       nav.click();
       const ok = await this.waitFor(() => this.isRecommendPage(), 8000);
+      if (this.state !== 'RUNNING') return;
       if (!ok) { this.fail('无法进入推荐 feed'); return; }
       await sleep(2500); // feed 内容异步渲染
+      if (this.state !== 'RUNNING') return;
     }
 
     // 其它页面（理论上不会到这里）：整页回首页，302 到精选后由 resume 续跑
@@ -175,24 +208,34 @@ export class FeedAutomation {
     // 新手引导浮层会吞掉 feed 上的点击，先关掉
     this.deps.adapter.dismissFeedGuide();
     await sleep(500);
+    if (this.state !== 'RUNNING') return;
 
-    // 采集未访问过的作者链接；没有则连刷切换下一条，最多 N 轮
-    for (let round = 0; round < MAX_EMPTY_SCROLL_ROUNDS; round++) {
+    // 限量模式最多查 N 条无新作者视频；持续模式继续寻找，控件失效则停止。
+    let failedSwitches = 0;
+    for (let round = 0; shouldContinueSearching(this.mode, round, MAX_EMPTY_SCROLL_ROUNDS); round++) {
       if (this.state !== 'RUNNING') return;
       const links = this.deps.adapter.getFeedAuthorLinks()
         .filter((a) => !this.visited.has(a.href.split('?')[0]));
       if (links.length > 0) {
         const url = links[0].href.split('?')[0];
-        this.visited.add(url);
-        this.setMessage(`进入达人主页（本次已访问 ${this.visited.size} 个）`);
+        this.rememberVisit(url);
+        this.setMessage(`进入达人主页（本次已访问 ${this.visitedCount} 个）`);
         this.saveSession();
         await sleep(300);
+        if (this.state !== 'RUNNING') return;
         this.deps.adapter.navigateTo(url); // 整页跳转，后续由 resume -> stepOnCreator 续跑
         return;
       }
-      this.setMessage(`未发现新达人，切换下一条（${round + 1}/${MAX_EMPTY_SCROLL_ROUNDS}）`);
+      this.setMessage(this.mode === 'CONTINUOUS'
+        ? `未发现新达人，继续切换视频（已尝试 ${round + 1} 条）`
+        : `未发现新达人，切换下一条（${round + 1}/${MAX_EMPTY_SCROLL_ROUNDS}）`);
       const switched = this.deps.adapter.activateNextFeedVideo();
+      failedSwitches = switched ? 0 : failedSwitches + 1;
       if (!switched) logger.warn(SCOPE, 'next-video control activation failed');
+      if (failedSwitches >= MAX_CONSECUTIVE_FAILS) {
+        this.fail('连续无法切换下一条视频，连刷已停止');
+        return;
+      }
       await sleep(2500);
     }
     this.fail('多次切换后仍无新达人链接（可能未登录、被弹窗遮挡或 feed 未加载）');
@@ -202,7 +245,7 @@ export class FeedAutomation {
 
   private async stepOnCreator(): Promise<void> {
     if (this.state !== 'RUNNING') return;
-    const limit = getSettingsSync().autoBatchLimit || 10;
+    const limit = effectiveSendLimit(this.mode, getSettingsSync().autoBatchLimit);
 
     this.setMessage('达人页加载中…');
     const expectedSecUid = this.deps.adapter.getCreatorSecUid();
@@ -212,6 +255,7 @@ export class FeedAutomation {
       const parsed = this.deps.parser.parse();
       return !!parsed && (!expectedSecUid || parsed.secUid === expectedSecUid);
     }, 15000);
+    if (this.state !== 'RUNNING') return;
     if (!ready) {
       this.markFail('达人页内容加载超时或达人身份不匹配');
       await this.backToFeedOrStop();
@@ -225,6 +269,7 @@ export class FeedAutomation {
     // 实测（BUG-20260903-02）：达人页 IM SDK 冷启动较慢，过早点"私信"会被吞掉，
     // 这里等页面与 SDK 充分就绪（探针验证 9s 后点击可稳定打开聊天层）
     await sleep(4000);
+    if (this.state !== 'RUNNING') return;
 
     const info = this.deps.parser.parse();
     if (!info) {
@@ -234,15 +279,27 @@ export class FeedAutomation {
     }
 
     const ctx = await this.deps.creatorService.syncFromPage(info);
+    if (this.state !== 'RUNNING') return;
     if (ctx.alreadyContacted) {
+      this.skipped++;
       this.setMessage(`跳过已联系：${info.nickname}`);
       logger.info(SCOPE, `skip already contacted: ${info.nickname}`);
       await this.backToFeedOrStop();
       return;
     }
 
+    const match = evaluateDatingMatch(info, getSettingsSync(), ctx.existing?.gender, ctx.existing?.genderConfirmed);
+    if (!match.matches) {
+      this.skipped++;
+      this.setMessage(`${match.reason}：${info.nickname}`);
+      logger.info(SCOPE, `skip dating filter: ${info.nickname}, ${match.reason}`);
+      await this.backToFeedOrStop();
+      return;
+    }
+
     // 等达人操作区真正挂载，避免页面虽已解析但私信按钮仍未完成渲染。
     const messageReady = await this.waitFor(() => !!this.deps.adapter.getMessageButton(), 10000);
+    if (this.state !== 'RUNNING') return;
     if (!messageReady) {
       this.markFail(`达人页私信入口加载超时：${info.nickname}`);
       await this.backToFeedOrStop();
@@ -266,34 +323,66 @@ export class FeedAutomation {
   private async outreachOnce(
     ctx: CreatorPageContext,
     info: CreatorInfo,
-    limit: number,
+    limit: number | null,
   ): Promise<boolean> {
     const { messageAdapter, creatorService, messageService } = this.deps;
 
     const opened = await messageAdapter.openMessageDialog(info.nickname, true);
+    if (this.state !== 'RUNNING') {
+      if (opened) messageAdapter.closeMessageDialog();
+      return false;
+    }
     if (!opened) {
       this.markFail(`私信窗口打不开（可能未登录）：${info.nickname}`);
       return false;
     }
     await sleep(400);
+    if (this.state !== 'RUNNING') {
+      messageAdapter.closeMessageDialog();
+      return false;
+    }
 
     const settings = getSettingsSync();
     const vars = buildVars(info, settings);
-    const content = settings.customMessage.trim()
-      ? render(settings.customMessage, vars)
-      : render(getTemplateById(settings.defaultTemplateId)?.content || '', vars);
+    const source = resolveBatchMessageSource(settings);
+    const content = render(source, vars).trim();
+    if (!content) {
+      messageAdapter.closeMessageDialog();
+      this.fail('私信内容为空，已停止');
+      return false;
+    }
     logger.info(SCOPE, `rendered message length = ${content.length}`);
 
+    if (!getSettingsSync().autoSendEnabled) {
+      messageAdapter.closeMessageDialog();
+      this.fail('消息自动发送已关闭，连刷停止');
+      return false;
+    }
+
     const filled = await messageAdapter.fillMessage(content);
+    if (this.state !== 'RUNNING') {
+      messageAdapter.closeMessageDialog();
+      return false;
+    }
     if (!filled) {
-      messageAdapter.closeMessageDialog(); // 复位面板，避免影响下一位达人
-      this.markFail(`私信填入失败：${info.nickname}`);
+      // 留在当前聊天层供检查：继续跳转会丢失未填全的草稿，也掩盖具体故障。
+      this.fail(`私信填入失败，连刷已停止；请检查当前聊天窗口：${info.nickname}`);
       return false;
     }
     await sleep(600);
+    if (this.state !== 'RUNNING') {
+      messageAdapter.closeMessageDialog();
+      return false;
+    }
+    if (!getSettingsSync().autoSendEnabled) {
+      messageAdapter.closeMessageDialog();
+      this.fail('消息自动发送已关闭，连刷停止');
+      return false;
+    }
 
     const sentOk = await messageAdapter.sendMessage();
     if (!sentOk) {
+      if (this.state !== 'RUNNING') return false;
       // 不关闭聊天层：自动点击可能被浏览器以 isTrusted=false 拒绝，
       // 保留已填文案让用户人工点击发送，避免回 feed 后无法补发。
       this.fail(`自动发送未被平台接受，请在当前聊天窗口手动点击发送：${info.nickname}`);
@@ -312,8 +401,12 @@ export class FeedAutomation {
 
     this.sent++;
     this.consecutiveFails = 0;
-    this.setMessage(`已发送 ${this.sent}/${limit}：${info.nickname}`);
-    logger.info(SCOPE, `sent ${this.sent}/${limit}: ${info.nickname}`);
+    if (this.state !== 'RUNNING') {
+      this.setMessage(`已手动停止（本次发送 ${this.sent} 条；最后一条在停止前已提交）`);
+      return false;
+    }
+    this.setMessage(`已发送 ${this.sent}/${limit ?? '∞'}：${info.nickname}`);
+    logger.info(SCOPE, `sent ${this.sent}/${limit ?? '∞'}: ${info.nickname}`);
     await sleep(2000); // 发送后稍作停顿再返回
     return true;
   }
@@ -328,8 +421,7 @@ export class FeedAutomation {
   /** 达到上限则收官，否则整页跳回首页（302 到精选后由 resume 续跑） */
   private async backToFeed(): Promise<void> {
     if (this.state !== 'RUNNING') return;
-    const limit = getSettingsSync().autoBatchLimit || 10;
-    if (this.sent >= limit) {
+    if (reachedSendLimit(this.mode, this.sent, getSettingsSync().autoBatchLimit)) {
       this.finishDone();
       return;
     }
@@ -381,6 +473,15 @@ export class FeedAutomation {
     logger.info(SCOPE, `feed automation done, sent=${this.sent}`);
   }
 
+  private rememberVisit(url: string): void {
+    this.visited.add(url);
+    this.visitedCount++;
+    if (this.visited.size > MAX_RECENT_VISITED_URLS) {
+      const oldest = this.visited.values().next().value;
+      if (oldest) this.visited.delete(oldest);
+    }
+  }
+
   private setMessage(message: string): void {
     this.message = message;
     this.deps.onChange(this.snapshot());
@@ -392,9 +493,12 @@ export class FeedAutomation {
     if (this.state !== 'RUNNING') return;
     const s: FeedSession = {
       v: 1,
+      mode: this.mode,
       sent: this.sent,
       fails: this.consecutiveFails,
       visited: Array.from(this.visited),
+      visitedCount: this.visitedCount,
+      skipped: this.skipped,
       message: this.message,
       startedAt: Date.now(),
     };

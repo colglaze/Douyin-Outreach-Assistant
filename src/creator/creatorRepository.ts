@@ -39,7 +39,9 @@ export class CreatorRepository {
         ...existing,
         nickname: info.nickname || existing.nickname,
         avatar: info.avatar || existing.avatar,
-        followers: info.followers || existing.followers,
+        followers: info.followersKnown ? info.followers : existing.followers,
+        followersKnown: info.followersKnown || existing.followersKnown || false,
+        gender: existing.genderConfirmed ? existing.gender : info.gender !== 'UNKNOWN' ? info.gender : existing.gender || 'UNKNOWN',
         following: info.following || existing.following,
         likes: info.likes || existing.likes,
         signature: info.signature || existing.signature,
@@ -71,6 +73,18 @@ export class CreatorRepository {
       ...c,
       status,
       lastContactAt: status === 'CONTACTED' ? Date.now() : c.lastContactAt,
+      updatedAt: Date.now(),
+    });
+  }
+
+  /** 用户核对主页后在本地标记性别；后续页面解析不会覆盖人工标记。 */
+  async updateGender(id: string, gender: Creator['gender']): Promise<void> {
+    const c = await this.getById(id);
+    if (!c) return;
+    await dbPut(Stores.CREATORS, {
+      ...c,
+      gender,
+      genderConfirmed: gender !== 'UNKNOWN',
       updatedAt: Date.now(),
     });
   }

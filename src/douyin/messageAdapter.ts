@@ -203,6 +203,21 @@ export class MessageAdapter {
     return this.normalizeEditorText(actual) === this.normalizeEditorText(expected);
   }
 
+  /** 编辑器可能在输入后被替换；只核对当前可见聊天层的输入框。 */
+  private async waitForFullText(dialog: Element, expected: string, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    do {
+      const latest = this.adapter.getMessageSurface();
+      if (latest?.dialog === dialog) {
+        this.surface = latest;
+        if (this.hasFullText(latest.input, expected)) return true;
+      }
+      if (Date.now() >= deadline) break;
+      await sleep(100);
+    } while (true);
+    return false;
+  }
+
   async fillMessage(text: string): Promise<boolean> {
     if (!text.trim()) {
       logger.warn(SCOPE, 'refusing to fill empty message');
@@ -235,15 +250,13 @@ export class MessageAdapter {
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
     } else {
-      // 多行文本必须走 paste（insertText 会在首个换行截断）；单行仍用已验证的 insertText。
+      // 多行文本优先走 paste（insertText 可能在首个换行截断）。
       const isMultiline = /\r|\n/.test(text);
       if (isMultiline) {
-        this.pasteIntoSlate(input, text);
-        await sleep(200);
-        if (!this.hasFullText(input, text)) {
-          logger.warn(SCOPE, 'paste insert incomplete, fallback to per-line insertText');
-          const ok = this.insertIntoSlate(input, text);
-          if (!ok) logger.warn(SCOPE, 'per-line insertText also reported failure');
+        try {
+          this.pasteIntoSlate(input, text);
+        } catch (error) {
+          logger.warn(SCOPE, `paste insert unavailable: ${String(error)}`);
         }
       } else {
         const ok = this.insertIntoSlate(input, text);
@@ -251,21 +264,46 @@ export class MessageAdapter {
       }
     }
 
-    await sleep(500);
-    if (!input.isConnected || !this.adapter.isVisible(input) || !surface.dialog.contains(input)) {
-      logger.error(SCOPE, 'message input replaced during fill');
-      this.surface = null;
-      return false;
+    await sleep(150);
+    if (await this.waitForFullText(surface.dialog, text, 700)) {
+      logger.info(SCOPE, `message filled, length = ${text.length}`);
+      return true;
     }
-    if (!this.hasFullText(input, text)) {
-      const actual = input instanceof HTMLTextAreaElement || input instanceof HTMLInputElement
-        ? input.value
-        : input.textContent || '';
+
+    // 首轮未写全时，重新定位当前编辑器并用另一种路径替换一次；不得直接改 DOM 文本。
+    const retrySurface = this.adapter.getMessageSurface();
+    if (retrySurface?.dialog === surface.dialog && !(retrySurface.input instanceof HTMLTextAreaElement)
+      && !(retrySurface.input instanceof HTMLInputElement)) {
+      logger.warn(SCOPE, 'first insert incomplete, trying alternate Slate insertion');
+      if (/\r|\n/.test(text)) {
+        const ok = this.insertIntoSlate(retrySurface.input, text);
+        if (!ok) logger.warn(SCOPE, 'per-line insertText reported failure');
+      } else {
+        try {
+          this.pasteIntoSlate(retrySurface.input, text);
+        } catch (error) {
+          logger.warn(SCOPE, `paste fallback unavailable: ${String(error)}`);
+        }
+      }
+      await sleep(150);
+      if (await this.waitForFullText(surface.dialog, text, 700)) {
+        logger.info(SCOPE, `message filled after retry, length = ${text.length}`);
+        return true;
+      }
+    }
+
+    const lastSurface = this.adapter.getMessageSurface();
+    const latestInput = lastSurface?.dialog === surface.dialog ? lastSurface.input : null;
+    if (latestInput) {
+      const actual = latestInput instanceof HTMLTextAreaElement || latestInput instanceof HTMLInputElement
+        ? latestInput.value
+        : latestInput.textContent || '';
       logger.error(SCOPE, `fill verification failed: expected ${text.length} chars, got ${actual.length} chars`);
-      return false;
+    } else {
+      logger.error(SCOPE, 'message input disappeared during fill');
     }
-    logger.info(SCOPE, `message filled, length = ${text.length}`);
-    return true;
+    this.surface = null;
+    return false;
   }
 
   /**

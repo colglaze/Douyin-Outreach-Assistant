@@ -3,7 +3,7 @@
  * 负责"进入达人页 -> 查库 -> 判断是否联系过 -> 防重复提醒"的决策。
  */
 import { CreatorRepository } from './creatorRepository';
-import type { ContactStatus, Creator, CreatorInfo } from '../types';
+import type { ContactStatus, Creator, CreatorInfo, ProfileGender } from '../types';
 import { logger } from '../utils/logger';
 
 const SCOPE = 'CreatorService';
@@ -39,5 +39,10 @@ export class CreatorService {
   async markStatus(creatorId: string, status: ContactStatus): Promise<void> {
     await this.repo.updateStatus(creatorId, status);
     logger.info(SCOPE, `status updated: ${creatorId} -> ${status}`);
+  }
+
+  async markGender(creatorId: string, gender: ProfileGender): Promise<void> {
+    await this.repo.updateGender(creatorId, gender);
+    logger.info(SCOPE, `gender manually marked: ${creatorId} -> ${gender}`);
   }
 }

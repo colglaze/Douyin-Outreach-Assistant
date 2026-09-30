@@ -8,6 +8,7 @@ import { buildPolishMessages } from './prompt';
 import { getSettingsSync } from '../storage/settings';
 import type { AppSettings, CreatorInfo } from '../types';
 import { logger } from '../utils/logger';
+import { getAiRequestOptions } from './providerPresets';
 
 const SCOPE = 'AiService';
 
@@ -52,6 +53,7 @@ function callChatCompletions(
     messages,
     temperature: 0.7,
     max_tokens: 300,
+    ...getAiRequestOptions(settings.aiEndpoint, settings.aiModel),
   });
 
   return new Promise((resolve, reject) => {

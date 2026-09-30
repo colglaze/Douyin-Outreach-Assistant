@@ -11,6 +11,7 @@ import { MessageAdapter } from './douyin/messageAdapter';
 import { CreatorRepository } from './creator/creatorRepository';
 import { CreatorService, type CreatorPageContext } from './creator/creatorService';
 import { MessageService } from './message/messageService';
+import { deleteCustomTemplate, saveCustomTemplate } from './message/templateEngine';
 import { FeedAutomation } from './feed/feedAutomation';
 import { polish } from './ai/aiService';
 import { openDB } from './storage/indexedDb';
@@ -20,9 +21,11 @@ import { OutreachPanel, type PanelActions } from './ui/panel';
 import { showToast } from './ui/toast';
 import { sleep } from './utils/dom';
 import { logger } from './utils/logger';
+import { inferWorkGender } from './creator/workGenderClues';
+import { readCoverTexts } from './ai/workCoverReader';
 
 const SCOPE = 'Main';
-const VERSION = '0.5.5';
+const VERSION = '0.10.1';
 
 // BUG-20260903-03：存活标记必须是最早执行的语句——
 // 用户在控制台过滤 [DouyinOutreach] 即可确认脚本是否被注入执行
@@ -119,6 +122,22 @@ async function bootstrap(): Promise<void> {
   let currentCtx: CreatorPageContext | null = null;
 
   const actions: PanelActions = {
+    onAnalyzeWorks: async (transcript) => {
+      if (!currentCtx) throw new Error('当前没有达人资料');
+      const secUid = currentCtx.info.secUid;
+      const works = adapter.getRecentWorks();
+      const coverResult = works.length ? await readCoverTexts(works) : { texts: [], coversChecked: 0, warning: '当前主页未加载公开作品。' };
+      if (currentCtx?.info.secUid !== secUid) throw new Error('达人页面已切换');
+      return inferWorkGender(works, transcript, coverResult.texts, coverResult.coversChecked, coverResult.warning);
+    },
+    onSetGender: async (gender) => {
+      if (!currentCtx) return;
+      const { creator } = await creatorService.saveToLibrary(currentCtx.info);
+      await creatorService.markGender(creator.id, gender);
+      currentCtx = await creatorService.syncFromPage(currentCtx.info);
+      panel.showForCreator(currentCtx, actions);
+      showToast(gender === 'UNKNOWN' ? '已清除人工性别标记' : '性别标记已保存到本地', 'success');
+    },
     onSaveToLibrary: async () => {
       if (!currentCtx) return;
       const { isNew } = await creatorService.saveToLibrary(currentCtx.info);
@@ -192,13 +211,23 @@ async function bootstrap(): Promise<void> {
     onSaveSettings: async (patch) => {
       await saveSettings(patch);
       showToast('设置已保存', 'success');
-      // 设置中的品牌变量会影响模板渲染，刷新面板上下文
-      if (currentCtx) panel.showForCreator(currentCtx, actions);
+    },
+
+    onSaveTemplate: async (name, content, id) => {
+      const result = saveCustomTemplate(getSettingsSync().customTemplates, name, content, id);
+      await saveSettings({ customTemplates: result.templates });
+      showToast(id ? '模板已更新' : '模板已保存', 'success');
+      return result.template;
+    },
+
+    onDeleteTemplate: async (id) => {
+      await saveSettings(deleteCustomTemplate(getSettingsSync(), id));
+      showToast('模板已删除', 'success');
     },
 
     // REQ-20260903-02：连刷自动化控制
-    onStartFeedAuto: async () => {
-      await feedAuto.start();
+    onStartFeedAuto: async (mode) => {
+      await feedAuto.start(mode);
     },
     onStopFeedAuto: () => feedAuto.stop(),
     getFeedAutoSnapshot: () => feedAuto.snapshot(),

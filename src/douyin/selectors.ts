@@ -11,6 +11,33 @@
  * - 私信按钮是 semix 组件库的 button，无 data-e2e，按文本"私信"兜底匹配
  */
 export const selectors = {
+  /** 主页资料容器；性别识别限定在此区域，避免读取评论或推荐内容。 */
+  creatorProfile: [
+    '[data-e2e="user-info"]',
+    '[data-e2e="user-detail"]',
+  ],
+  /** 仅匹配带明确性别语义的徽标。 */
+  genderBadge: [
+    '[data-e2e="user-info"] > p > span',
+    '[data-e2e*="gender"]',
+    '[aria-label*="性别"]',
+    '[title*="性别"]',
+    'img[alt="男"], img[alt="女"], img[alt="男性"], img[alt="女性"]',
+    'svg[class*="gender"], i[class*="gender"]',
+  ],
+  /** 登录态公开主页实测：作品在 user-post-list 的 li > a 中，标题在 p，封面在 img。 */
+  userPostList: [
+    '[data-e2e="user-post-list"]',
+  ],
+  userPostLinks: [
+    'li a[href*="/video/"], li a[href*="/note/"]',
+  ],
+  userPostCaption: [
+    'p',
+  ],
+  userPostCover: [
+    'img',
+  ],
   /** 达人主页 - 昵称（页面唯一 h1，实测文本即昵称） */
   creatorName: [
     '[data-e2e="user-detail"] h1',

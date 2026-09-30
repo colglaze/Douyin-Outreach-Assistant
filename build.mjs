@@ -12,8 +12,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const banner = `// ==UserScript==
 // @name         抖音达人商务助手 (Douyin Outreach Assistant)
 // @namespace    https://github.com/douyin-outreach
-// @version      0.5.5
-// @description  达人识别 / 达人库 / 私信模板 / AI润色 / 一键填入私信 / 联系记录（默认人工确认，自动发送需显式开启）
+// @version      0.10.1
+// @description  商务/交友模式 / 持续连刷 / 多模型 AI / 自由私信与模板 / 联系记录
 // @author       douyin-outreach
 // @match        https://www.douyin.com/*
 // @grant        GM_xmlhttpRequest
